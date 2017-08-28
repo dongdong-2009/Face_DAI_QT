@@ -1,0 +1,838 @@
+#include "facerecognize.h"
+#include "ui_facerecognize.h"
+
+faceRecognize::faceRecognize(QWidget *parent) :
+    QWidget(parent),m_pFaceDBA(mpNULL),
+    ui(new Ui::faceRecognize)
+{
+    ui->setupUi(this);
+    deviceId = 0;
+
+    eCameraStatus = Nothing;
+    //eAliveStatus = Invalid;
+    m_bAliveCheckStart = mpFALSE;
+
+    m_pTimer = new QTimer(this);
+    m_pFaceDBA = new face_database_api();
+    m_netWork = new client_network();
+
+    getCurrentPath();
+    InitFaceModel();
+    loadCascadeClassifier();
+
+    //frame(IMG_HEIGHT,IMG_WIDTH,CV_8UC3,cv::Scalar(0));
+    frame.create(IMG_HEIGHT,IMG_WIDTH,CV_8UC3);
+    connect(m_pTimer,SIGNAL(timeout()),this,SLOT(readFrameFromCamera()));
+    //connect(m_pTimer,SIGNAL(timeout()),this,SLOT(handleTimeOut()));
+    ui->OpenCamera->setEnabled(true);
+    ui->OpenImage->setDisabled(true);
+    ui->CaptureImage->setDisabled(true);
+}
+
+faceRecognize::~faceRecognize()
+{
+    delete ui;
+
+    destoryFaceModel();
+    if(mpNULL != m_pTimer)
+    {
+        m_pTimer->stop();
+        delete m_pTimer;
+        m_pTimer = mpNULL;
+    }
+
+    //delete database
+    if(mpNULL != m_pFaceDBA)
+    {
+        delete m_pFaceDBA;
+        m_pFaceDBA = mpNULL;
+    }
+
+    if(mpNULL != m_netWork)
+    {
+        delete m_netWork;
+        m_netWork = mpNULL;
+    }
+    cout<<"exit face recognizer!"<<endl;
+}
+
+///<summary> Load opencv cascade classifier </summary>
+void faceRecognize::loadCascadeClassifier()
+{
+    cout<<"Load CascadeClassifierl..."<<endl;
+    if(access((scurrentpath + FACE_CASCADE_DIR).c_str(), R_OK) == 0)
+    {
+        const std::string frontalFacePath = (scurrentpath + FACE_CASCADE_DIR +"haarcascade_frontalface_alt2.xml").c_str();
+        if (!cascFace.load(frontalFacePath)) {
+            printf("Error loading cascade file for face");
+            return ;
+        }
+        cout<<"Load CascadeClassifierl finshed!"<<endl;
+    }
+    else
+    {
+        cout <<"please check your resource floder!"<<endl;
+        return;
+    }
+
+    leftEyeTrackInfo.init();
+    rightEyeTrackInfo.init();
+
+    calibrationFace = CALIBRATION_DEFAULT_VALUE;
+}
+
+///<summary> Get current work path </summary>
+mpVOID faceRecognize::getCurrentPath(mpVOID)
+{
+    QString qstrpath = QApplication::applicationDirPath();
+    scurrentpath = qstrpath.toStdString();
+    if(!scurrentpath.empty())
+    {
+        printf("Directory is:%s\n", scurrentpath.c_str() );
+    }
+}
+
+///<summary> Initialize face model of the seeta  </summary>
+mpVOID faceRecognize::InitFaceModel(mpVOID)
+{
+    cout<<"Initialize Face Detection Model!"<<endl;
+    if(access((scurrentpath + FACE_MODES_DIR).c_str(), R_OK) == 0)
+    {
+        cout<<"starting Load face detection libs..."<<endl;
+        // Initialize face Detection model
+        m_pFaceDet = new FaceDetection((scurrentpath + FACE_MODES_DIR + "face_fd_frontal_v1.0.bin").c_str());
+        // Initialize face alignment model
+        m_pFaceAli = new FaceAlignment((scurrentpath + FACE_MODES_DIR + "face_fa_v1.1.bin").c_str());
+        // Initialize face Identification model
+        m_pFaceIde = new FaceIdentification((scurrentpath + FACE_MODES_DIR + "face_fr_v1.0.bin").c_str());
+        m_pFaceDet->SetMinFaceSize(40);
+        m_pFaceDet->SetScoreThresh(2.f);
+        m_pFaceDet->SetImagePyramidScaleFactor(0.8f);
+        m_pFaceDet->SetWindowStep(4, 4);
+        cout<<"Load face detection libs finshed!"<<endl;
+    }
+    else
+    {
+        cout <<"please check your resource floder,make sure the seeta bin!"<<endl;
+        return;
+    }
+}
+
+///<summary> Destory face model of the seeta </summary>
+mpVOID faceRecognize::destoryFaceModel(mpVOID)
+{
+    //delete seeta pointer
+    if(mpNULL != m_pFaceDet)
+    {
+        delete m_pFaceDet;
+        m_pFaceDet = mpNULL;
+    }
+
+    if(mpNULL != m_pFaceAli)
+    {
+        delete m_pFaceAli;
+        m_pFaceAli = mpNULL;
+    }
+
+    if(mpNULL != m_pFaceIde)
+    {
+        delete m_pFaceIde;
+        m_pFaceIde = mpNULL;
+    }
+}
+
+///<summary> detect face from the frame </summary>
+mpINT faceRecognize::detectFaceNumWithFrame(Mat gallery_img)
+{
+    if(gallery_img.empty()) return 0;
+
+    cv::Mat gallery_img_gray;
+    cv::cvtColor(gallery_img, gallery_img_gray, CV_BGR2GRAY);
+
+    seeta::ImageData img_data_gray(gallery_img_gray.cols, gallery_img_gray.rows, gallery_img_gray.channels());
+    img_data_gray.data = gallery_img_gray.data;
+    img_data_gray.width = gallery_img_gray.cols;
+    img_data_gray.height = gallery_img_gray.rows;
+    img_data_gray.num_channels = 1;
+
+    std::vector<seeta::FaceInfo> faces = m_pFaceDet->Detect(img_data_gray);  // Detect faces
+    facesInfo.faces.clear();
+    facesInfo.faces = faces; //get the face point to drawing box
+
+    int32_t num = static_cast<int32_t>(faces.size());
+    if (num == 0) {
+        return 0;
+    }
+    else {
+        //if(faceData.face_name.empty())
+        //{
+            for(int i = 0; i < num; i++) {
+                //Drawing the face rect
+                cv::Rect face_rect;
+                face_rect.x = facesInfo.faces[i].bbox.x;
+                face_rect.y = facesInfo.faces[i].bbox.y;
+                face_rect.width = facesInfo.faces[i].bbox.width;
+                face_rect.height = facesInfo.faces[i].bbox.height;
+                cv::rectangle(gallery_img, face_rect, CV_RGB(255, 0, 0), 4, 8, 0);
+            }
+        //}
+        return num;
+    }
+}
+
+///<summary> extract face feature infomation from the face of the image </summary>
+mpVOID faceRecognize::extractFaceFeatureWithImage(Mat gallery_img, float* probe_fea)
+{
+    if(gallery_img.empty()) return ;
+
+    cv::Mat gallery_img_gray;
+    cv::cvtColor(gallery_img, gallery_img_gray, CV_BGR2GRAY);
+
+    //gallery image
+    seeta::ImageData img_data_color(gallery_img.cols, gallery_img.rows, gallery_img.channels());
+    img_data_color.data = gallery_img.data;
+
+    seeta::ImageData img_data_gray(gallery_img_gray.cols, gallery_img_gray.rows, gallery_img_gray.channels());
+    img_data_gray.data = gallery_img_gray.data;
+    img_data_gray.width = gallery_img_gray.cols;
+    img_data_gray.height = gallery_img_gray.rows;
+
+    //Detect 5 facial landmarks
+    //seeta::FacialLandmark points[5];
+    m_pFaceAli->PointDetectLandmarks(img_data_gray, facesInfo.faces[0], facesInfo.points);
+    /*for (int i = 0; i<5; i++)
+    {
+        cv::circle(gallery_img, cv::Point(points[i].x, points[i].y), 2,
+        CV_RGB(0, 255, 0));
+    }*/
+    //Extract face identity feature
+    m_pFaceIde->ExtractFeatureWithCrop(img_data_color, facesInfo.points, probe_fea);
+}
+
+///<summary> Checking the center point whether in the center box </summary>
+mpBOOL faceRecognize::isFaceInRectArea(cv::Point curcenter)
+{
+    mpBOOL bRet = mpFALSE;
+    if(  curcenter.x > (center.x - ALIVE_DIFFER_X_LENGTH) &&
+         curcenter.y > (center.y - ALIVE_DIFFER_Y_LENGTH) &&
+         curcenter.x < (center.x + ALIVE_DIFFER_X_LENGTH) &&
+         curcenter.y < (center.y + ALIVE_DIFFER_Y_LENGTH) )
+    {
+        //cout<<"aliveDetect true"<<endl;
+        bRet =  mpTRUE;
+    }
+    else
+    {
+        //cout<<"aliveDetect mpFALSE"<<endl;
+    }
+
+    return bRet;
+}
+
+///<summary> Get the previous image and current image, crop the face region to trace eyes check blink ation</summary>
+bool faceRecognize::getMatchFaces(Mat matCapturedGrayImage, Mat matCapturedImage,cv::Rect face,cv::Rect &detectedFaceRegion)
+{
+    calibrationFace = calibrationFace - 1;
+    //first frame cannot calculate flow; there have to be previous frame to do that; face is calibrated each "x" frames (here)
+    if (detectedFaceRegion.height == 0 || calibrationFace < 1)
+    {
+        detectedFaceRegion = face;//
+        previousFace = matCapturedGrayImage(face);
+        //reset calibration number to default (from constants.h)
+        calibrationFace = CALIBRATION_DEFAULT_VALUE;
+        center.x = detectedFaceRegion.x + detectedFaceRegion.width/2;
+        center.y = detectedFaceRegion.y + detectedFaceRegion.height/2;
+    }
+    else
+    {
+        //drawing the first frame center point
+        //circle(matCapturedImage, cv::Point((detectedFaceRegion.x+detectedFaceRegion.width/2),\
+                                           (detectedFaceRegion.y+detectedFaceRegion.height/2)), 3 ,Scalar(255, 255, 255), CV_FILLED);
+        //first frame captured with face; now will be calculated optical flow
+        currentFace = matCapturedGrayImage(detectedFaceRegion);
+        //imshow("currentFace", currentFace);
+        //imshow("previousFace", previousFace);
+
+        Mat flow, cflow;
+        int globalMovementX, globalMovementY;
+        calcOpticalFlowFarneback(previousFace, currentFace, flow, 0.5, 3, 15, 3, 5, 1.2, 0);
+        cvtColor(previousFace, cflow, CV_GRAY2BGR);
+        calcFlow(flow, cflow, 1, globalMovementX, globalMovementY);
+
+        //move rectangle to a new place (according to calculated optical flow)
+        detectedFaceRegion.x = detectedFaceRegion.x + globalMovementX;
+        detectedFaceRegion.y = detectedFaceRegion.y + globalMovementY;
+
+        //when the rectangle is out of visible window; so it doesn't crash
+        if (detectedFaceRegion.x < 0) {
+            detectedFaceRegion.x = 0;
+        }
+        if (detectedFaceRegion.y < 0) {
+            detectedFaceRegion.y = 0;
+        }
+
+        if (detectedFaceRegion.x + detectedFaceRegion.width > matCapturedImage.size().width - 1) {
+            detectedFaceRegion.x = matCapturedImage.size().width - detectedFaceRegion.width - 1;
+        }
+        if (detectedFaceRegion.y + detectedFaceRegion.height > matCapturedImage.size().height - 1) {
+            detectedFaceRegion.y = matCapturedImage.size().height - detectedFaceRegion.height - 1;
+        }
+
+        //rectangle(matCapturedImage, detectedFaceRegion, 12);
+        currentFace = matCapturedGrayImage(detectedFaceRegion);
+
+        mpBOOL bRet =  mpFALSE;
+
+        if(!m_bAliveCheckStart)
+        {
+            bRet = isFaceInRectArea(cv::Point((face.x + face.width/2), (face.y + face.height/2)) );
+            if( mpFALSE == bRet  )
+            {
+                m_bAliveCheckStart = mpTRUE;
+                closeTime = clock();
+                return mpFALSE;
+            }
+        } else{
+
+            clock_t curTime = clock();
+            double diffticks = curTime - closeTime;
+            double diffms = diffticks / (CLOCKS_PER_SEC / 1000);
+
+            string box_text;
+            if( diffms < 3000)
+            {
+                box_text = format("Please don't move your head, blink your eyes.");
+            }
+            else  if( diffms < 4000 && diffms > 3000)
+            {
+                box_text = format("Please waiting for 3s time, countdown 3s.");
+            }
+            else  if( diffms < 5000 && diffms > 4000)
+            {
+                box_text = format("Please waiting for 3s time, countdown 2s.");
+            }
+            else  if( diffms < 6000 && diffms > 5000)
+            {
+                box_text = format("Please waiting for 3s time, countdown 1s.");
+            }
+            else  if( diffms < 7000 && diffms > 6000)
+            {
+                faceData.init();
+                m_bAliveCheckStart = mpFALSE;
+                detectedFaceRegion.height = 0;
+                rightEyeTrackInfo.init();
+                leftEyeTrackInfo.init();
+            }
+            cv::destroyWindow("matRightEyeCurrent");
+            cv::destroyWindow("matLeftEyeCurrent");
+            putText(matCapturedImage, box_text, Point(120, 30), FONT_HERSHEY_PLAIN, 1.0, CV_RGB(255,0,0), 2.0);
+            return mpFALSE;
+        }
+        //when we have two stabilised faces (previous and current) now we can calculate their movement
+        eyeTracking(currentFace, previousFace);
+        swap(previousFace, currentFace);	//previous Face is now currentFace
+    }
+    return mpTRUE;
+}
+
+///<summary> On input there are captured images, classifiers and output is saved in detectedFaceRegion. This have to be this way, otherwise the image was changing (have to be reference)</summary>
+void faceRecognize::headTracking(Mat matCapturedImage, CascadeClassifier cascFace, cv::Rect &detectedFaceRegion)
+{
+    Mat matCapturedGrayImage;
+    cvtColor(matCapturedImage, matCapturedGrayImage, CV_BGR2GRAY);
+
+    cv::Rect face = findBiggestFace(matCapturedGrayImage, cascFace);
+    if (face.width == 0 && face.height == 0) {
+        return;
+    }
+
+    mpBOOL bRet =  getMatchFaces(matCapturedGrayImage,matCapturedImage,face,detectedFaceRegion);
+    if(!bRet) return ;
+    if(!faceData.face_name.empty()) {
+        //make rectangle around face, display face name and prediction
+        //rectangle(matCapturedImage, face, 1234);
+        string box_text = format("%s(%f)",faceData.face_name.c_str(), faceData.prediction);
+        putText(matCapturedImage, box_text, Point(face.x, face.y-20), FONT_HERSHEY_PLAIN, 1.0, CV_RGB(255,0,0), 2.0);
+    }
+
+    if (leftEyeTrackInfo.eyeOpen) {
+        //when the eye is open, circle will be drawn on top of the image
+        circle(matCapturedImage, Point(40, 40), 20, Scalar(102, 255, 51), 40, 8, 0);
+    }
+    else
+    {
+        //when the eye is closed, time from closing is calculated and drawn on the image
+        circle(matCapturedImage, Point(40, 40), 20, Scalar(0, 0, 255), 40, 8, 0);
+
+        //when the time of closed is is bigger than 5 seconds, beeping starts
+        //double diffticks = clock() - leftEyeTrackInfo.eyeCloseTime;
+        //double diffms = diffticks / (CLOCKS_PER_SEC / 1000);
+        //putText(matCapturedImage, to_string_with_precision(diffms), cvPoint(80, 100), FONT_HERSHEY_COMPLEX_SMALL, 0.8, cvScalar(50, 50, 50), 1, CV_AA);
+        //if (diffms > 5000) cout << "\a";
+    }
+
+    if (rightEyeTrackInfo.eyeOpen) {
+        circle(matCapturedImage, Point(600, 40), 20, Scalar(102, 255, 51), 40, 8, 0);
+    }
+    else
+    {
+        circle(matCapturedImage, Point(600, 40), 20, Scalar(0, 0, 255), 40, 8, 0);
+
+        //double diffticks = clock() - rightEyeTrackInfo.eyeCloseTime;
+        //double diffms = diffticks / (CLOCKS_PER_SEC / 1000);
+        //putText(matCapturedImage, to_string_with_precision(diffms), cvPoint(520, 100), FONT_HERSHEY_COMPLEX_SMALL, 0.8, cvScalar(50, 50, 50), 1, CV_AA);
+        //if (diffms > 5000) cout << "\a";
+    }
+    //put out number of eye blinks with text on the UI
+    putText(matCapturedImage, to_string(leftEyeTrackInfo.blinkNumber), cvPoint(100, 45), FONT_HERSHEY_COMPLEX_SMALL, 0.8, cvScalar(0, 0, 255), 1, CV_AA);
+    putText(matCapturedImage, to_string(rightEyeTrackInfo.blinkNumber), cvPoint(520, 45), FONT_HERSHEY_COMPLEX_SMALL, 0.8, cvScalar(0, 0, 255), 1, CV_AA);
+}
+
+///<summary> Select eyes from previous and current faces and detect blink </summary>
+void faceRecognize::eyeTracking(Mat &matCurrentFace, Mat &matPreviousFace)
+{
+    Mat matLeftEyePrevious;
+    Mat matRightEyePrevious;
+    Mat matLeftEyeCurrent;
+    Mat matRightEyeCurrent;
+
+    getEyesFromFace(matPreviousFace, matLeftEyePrevious, matRightEyePrevious);
+    getEyesFromFace(matCurrentFace, matLeftEyeCurrent, matRightEyeCurrent);
+
+    cv::namedWindow("matLeftEyeCurrent", CV_WINDOW_NORMAL);
+    cv::namedWindow("matRightEyeCurrent", CV_WINDOW_NORMAL);
+
+    //imshow("matLeftEyePrevious", matLeftEyePrevious);
+    //imshow("matRightEyePrevious", matRightEyePrevious);
+    imshow("matLeftEyeCurrent", matLeftEyeCurrent);
+    imshow("matRightEyeCurrent", matRightEyeCurrent);
+    cv::waitKey(5);
+
+    detectBlink(matLeftEyePrevious, matLeftEyeCurrent, "left", leftEyeTrackInfo.eyeOpen, leftEyeTrackInfo.blinkNumber, leftEyeTrackInfo.eyeCloseTime);				// each eye have its own blinking detection, timer and blink counter
+    detectBlink(matRightEyePrevious, matRightEyeCurrent, "right", rightEyeTrackInfo.eyeOpen, rightEyeTrackInfo.blinkNumber, rightEyeTrackInfo.eyeCloseTime);
+}
+
+///<summary> Measure eye movement, return values are movementX and movementY (raw values of movement, for example 500 pixels moved to the right) </summary>
+void faceRecognize::calcFlowEyes(const Mat& flow, Mat& cflowmap, int step, int &movementX, int &movementY)
+{
+    movementX = 0;
+    movementY = 0;
+
+    for (int y = 0; y < cflowmap.rows; y += step)
+    {
+        for (int x = 0; x < cflowmap.cols; x += step)
+        {
+            const Point2f& fxy = flow.at<Point2f>(y, x);
+
+            movementX = movementX + fxy.x;														//these are raw values of movement (not divided by number of pixels)
+            movementY = movementY + fxy.y;
+        }
+    }
+}
+
+///<summary> Measure face movement, return values are globalMovementX and globalMovementY ("clean" values that means real pixel movement by for example 2 pixels) </summary>
+void faceRecognize::calcFlow(const Mat& flow, Mat& cflowmap, int step, int &globalMovementX, int &globalMovementY)
+{
+    int localMovementX = 0;
+    int localMovementY = 0;
+
+    for (int y = 0; y < cflowmap.rows; y += step)
+    {
+        for (int x = 0; x < cflowmap.cols; x += step)
+        {
+            const Point2f& fxy = flow.at<Point2f>(y, x);
+
+            localMovementX = localMovementX + fxy.x;
+            localMovementY = localMovementY + fxy.y;
+        }
+    }
+
+    //these are usable values for global movement of face (for example + 2 pixels to axis x)
+    globalMovementX = (localMovementX / (cflowmap.cols * cflowmap.rows))*2;
+    globalMovementY = (localMovementY / (cflowmap.rows * cflowmap.cols))*2;
+}
+
+///<summary> Blink detection for previous and current frame of an eye, will calculate flow and increment counters of eye blinking </summary>
+void faceRecognize::detectBlink(Mat &matEyePrevious, Mat &matEyeCurrent, String eye, bool &eyeOpen, int &blinkNumber, clock_t &closeTime)
+{
+    Mat leftFlow, leftCflow;
+    calcOpticalFlowFarneback(matEyePrevious, matEyeCurrent, leftFlow, 0.5, 3, 15, 3, 5, 1.2, 0);
+    cvtColor(matEyePrevious, leftCflow, CV_GRAY2BGR);
+
+    int movementX, movementY;
+    calcFlowEyes(leftFlow, leftCflow, 1, movementX, movementY);
+
+    if (movementY == 0) {
+        return;
+    }
+
+    if (movementY > 0 && eyeOpen) {						//eye is now closed
+
+        closeTime = clock();
+        eyeOpen = false;
+        blinkNumber = blinkNumber + 1;					//increment blink count number for current eye
+        //cout << eye;
+        //cout << "IS CLOSED, localmovementX=";
+        //cout << movementX;
+        //cout << ", localmovementY=";
+        //cout << movementY;
+        //cout << "\n";
+        //cout << '\a';
+    }
+    else if (movementY < 0 && !eyeOpen){				//eye is now open
+
+        eyeOpen = true;
+        //cout << eye;
+        //cout << "IS OPEN, localmovementX=";
+        //cout << movementX;
+        //cout << ", localmovementY=";
+        //cout << movementY;
+        //cout << "\n";
+        //cout << '\a';
+    }
+}
+
+///<summary>Get left and right eye from face (in one frame)</summary>
+void faceRecognize::getEyesFromFace(Mat &matFace, Mat &matLeftEye, Mat &matRightEye)
+{
+    Size faceSize = matFace.size();
+
+    int eye_region_width = faceSize.width * (EYE_PERCENT_WIDTH_PARAMS / 100.0);
+    int eye_region_height = faceSize.width * (EYE_PERCENT_HEIGHT_PARAMS / 100.0);
+    int eye_region_top = faceSize.height * (EYE_PERCENT_TOP_PARAMS / 100.0);
+    cv::Rect leftEyeRegion(faceSize.width*(EYE_PERCENT_SIDE_PARAMS / 100.0), eye_region_top, eye_region_width, eye_region_height);
+    cv::Rect rightEyeRegion(faceSize.width - eye_region_width - faceSize.width*(EYE_PERCENT_SIDE_PARAMS / 100.0), eye_region_top, eye_region_width, eye_region_height);
+
+    matLeftEye = matFace(leftEyeRegion);
+    matRightEye = matFace(rightEyeRegion);
+}
+
+///<summary>From grayscale image captured on camera will find one biggest face. If there is no face, returnValue will be empty.</summary>
+cv::Rect faceRecognize::findBiggestFace(Mat matCapturedGrayImage, CascadeClassifier cascFace)
+{
+    cv::Rect returnValue;
+    if(cascFace.empty())
+    {
+        cout<< "Is your cascade classifier successfully loaded?" <<endl;
+        return returnValue;
+    }
+
+    vector<cv::Rect> faces;
+    cascFace.detectMultiScale(matCapturedGrayImage, faces, 1.1, 2, 0 | CV_HAAR_SCALE_IMAGE | CV_HAAR_FIND_BIGGEST_OBJECT, Size(150, 150), Size(300, 300));
+
+    if (faces.size() > 0) {
+        return faces[0];
+    }
+    else {
+        cout<< "no face was found!" <<endl;
+        return returnValue;
+    }
+}
+
+///<summary> Select feature infomation from database and find out the feature name </summary>
+mpBOOL faceRecognize::selectFeatureFromDatabase(float* probe_fea)
+{
+    mpBOOL bRet = mpFALSE;
+    float prediction = 0.0;
+    face_database_feature_info_t face_info;
+    memset(&face_info, 0x00, sizeof(face_info));
+    m_pFaceDBA->face_database_inquire_prepare();
+
+    while(SQLITE_ROW ==  m_pFaceDBA->face_database_inquire_step())
+    {
+        m_pFaceDBA->face_database_inquire_info(&face_info);
+        prediction = m_pFaceIde->CalcSimilarity(face_info.key_data, probe_fea);//compare
+        if (prediction >= FACE_SET_PREDICTION_VALUE)
+        {
+            faceData.face_name = face_info.key_name;
+            faceData.prediction = prediction;
+            bRet = mpTRUE;
+            break;
+        }
+    }//end of while
+    m_pFaceDBA->face_database_inquire_shutdown();
+    return bRet;
+}
+
+///<summary> Read the frame from camera,start recognize and alive detect </summary>
+mpVOID faceRecognize::readFrameFromCamera()
+{
+    /*set prediction label color*/
+    QPalette palette;
+    palette.setColor(QPalette::WindowText,Qt::red);
+    ui->label_ShowResult->setPalette(palette);
+
+    cap >> frame;
+    Mat original(IMG_HEIGHT,IMG_WIDTH,CV_8UC3,cv::Scalar(0));
+    original = frame.clone();    // Clone the current frame:
+    cv::flip(original,original,1);//flip image
+
+    int face_MaxNum = detectFaceNumWithFrame(original);
+    if(NO_FACE_DETECT_NUMBER == face_MaxNum || MIN_FACE_DETECT_NUMBER != face_MaxNum)
+    {
+        m_bAliveCheckStart = mpFALSE;
+        faceData.init();
+        if(NO_FACE_DETECT_NUMBER == face_MaxNum)
+        {
+            ui->label_ShowResult->setText("No face in the image!");
+            putText(original, "No face in the image!", Point(200, 30), FONT_HERSHEY_PLAIN, 1.0, CV_RGB(255,0,0), 2.0);
+        } else {
+            ui->label_ShowResult->setText("Make sure one face!");
+            putText(original, "Make sure one face!", Point(200, 30), FONT_HERSHEY_PLAIN, 1.0, CV_RGB(255,0,0), 2.0);
+        }
+        showImageWithUI(original);
+
+        cv::destroyWindow("matRightEyeCurrent");
+        cv::destroyWindow("matLeftEyeCurrent");
+        return;
+    }
+
+    if(faceData.face_name.empty())
+    {
+        //cv::namedWindow("matLeftEyeCurrent", CV_WINDOW_NORMAL);
+        //cv::namedWindow("matRightEyeCurrent", CV_WINDOW_NORMAL);
+        float probe_fea[2048];
+        memset(probe_fea, 0x00, sizeof(probe_fea));
+        extractFaceFeatureWithImage(original, probe_fea);
+        mpBOOL bRet = selectFeatureFromDatabase( probe_fea );
+        if(!bRet) {
+            ui->label_ShowResult->setText("Can't found the face!");
+            putText(original, "Can't found the face from database!", Point(200, 30), FONT_HERSHEY_PLAIN, 1.0, CV_RGB(255,0,0), 2.0);
+        }
+    }
+    else
+    {
+        headTracking(original, cascFace, detectedFaceRegion);
+
+        QString str;
+        str.append("Result: ");
+        str+=QString("%1(%2)").arg(faceData.face_name.c_str()).arg(faceData.prediction);
+        ui->label_ShowResult->setText(str);
+    }
+    showImageWithUI(original);
+/*
+    if(face_MaxNum)
+    {
+
+        for(int face_num = 0; face_num < face_MaxNum; face_num++)
+        {
+            float probe_fea[2048];
+            memset(probe_fea, 0x00, sizeof(probe_fea));
+            startExtractFeatureFromframe(original, face_num, probe_fea);
+            handleInquireFeatureResult(original, face_num, probe_fea);
+        }
+
+        QString str;
+        str.append("Peoples: ");
+        str+=QString("(%1)").arg(face_MaxNum);
+        ui->label_ShowResult->setText(str);
+
+    }
+    else
+    {
+        ui->label_ShowResult->setText("can't recognize");
+    }
+*/
+}
+
+///<summary> Show the result video with UI show video area </summary>
+void faceRecognize::showImageWithUI(Mat original)
+{
+    QImage image=QImage((const uchar*)original.data,original.cols,original.rows,QImage::Format_RGB888).rgbSwapped();
+    image = image.scaled(800, 600);
+    ui->label_DisplayCam->setPixmap(QPixmap::fromImage(image));
+}
+
+///<summary> Recognize starting and open camera </summary>
+void faceRecognize::on_OpenCamera_clicked()
+{
+    if(Nothing != eCameraStatus)
+    {
+        return;
+    }
+    cap.open(deviceId);
+    if(!cap.isOpened()) {
+        cout<<"Can't Open /dev/video0 device ID."<<endl;
+        QMessageBox::information(mpNULL,tr(QMESSAGEBOX_WARNING),tr("Can't Open /dev/video0 device ID"));
+    }else{
+        m_pTimer->start(FACE_DELAY_DISPLAY_INTERVAL);
+        eCameraStatus = Opened;
+        ui->OpenCamera->setDisabled(true);
+        ui->OpenImage->setEnabled(true);
+        ui->CaptureImage->setEnabled(true);
+    }
+}
+
+///<summary> Select image from folder with select button and save into database if have face in the image </summary>
+void faceRecognize::on_OpenImage_clicked()
+{
+    m_pTimer->stop();//stop update frame
+    QFileDialog fileDialog;
+    fileDialog.setAcceptMode(QFileDialog::AcceptOpen);
+    fileDialog.setFileMode(QFileDialog::AnyFile);
+    fileDialog.setViewMode(QFileDialog::Detail);//time,date..
+    fileDialog.setGeometry(10,30,600,400);
+    fileDialog.setDirectory(QFILEDIALOG_CURRENTPATH);
+    fileDialog.setFilter(tr(QFILEDIALOG_SUPPORTTYPE));
+    fileDialog.setWindowTitle(QFILEDIALOG_OPENIMAGE);
+    if(fileDialog.exec() == QDialog::Accepted)
+    {
+        QString fileName = fileDialog.selectedFiles()[0];//path+filename
+        if(!fileName.isEmpty())
+        {
+            cv::Mat original = cv::imread(fileName.toStdString(), 1);
+            if (original.data == nullptr) {
+                fprintf(stderr, "Read image error: %s\n", fileName.toStdString().c_str());
+                m_pTimer->start(FACE_DELAY_DISPLAY_INTERVAL);
+                return;
+            }
+
+            int MaxNum = detectFaceNumWithFrame(original);
+            if(MIN_FACE_DETECT_NUMBER != MaxNum)
+            {
+                cout<<"Make sure has one people in the frame!"<<endl;
+                QMessageBox::information(mpNULL,tr(QMESSAGEBOX_WARNING),tr("Make sure has one people in the frame!"));
+            }
+            else
+            {
+                showImageFromUsers(original);
+                if(inputLabelFromUsr())
+                {
+                    float gallery_fea[2048];
+                    memset(gallery_fea,0x00, sizeof(gallery_fea));
+                    extractFaceFeatureWithImage(original, gallery_fea);//get the current frame feature data
+                    m_pFaceDBA->face_database_insert_feature(inputName.toStdString().c_str(),gallery_fea,sizeof(gallery_fea));
+                    ui->OpenImage->update();
+                }
+                ui->ShowSnap->clear();//clear the capture frame or open image
+            }
+        }
+    }
+    else
+    {
+        QMessageBox::information(mpNULL,tr(QMESSAGEBOX_WARNING),tr("You didn't select any files"));
+    }
+    m_pTimer->start(FACE_DELAY_DISPLAY_INTERVAL);
+}
+
+///<summary> Now disable this function,it can save your capture image </summary>
+void faceRecognize::on_SaveImage_clicked()
+{
+    if(Captured != eCameraStatus)
+    {
+        QMessageBox::information(mpNULL,tr(QMESSAGEBOX_WARNING),tr("Please capture image first."));
+        return;
+    }
+
+    QFileDialog fileDialog;
+    fileDialog.setAcceptMode(QFileDialog::AcceptSave);//set save model
+    fileDialog.setFileMode(QFileDialog::AnyFile);
+    fileDialog.setViewMode(QFileDialog::Detail);//time,date..
+    fileDialog.setGeometry(10,30,600,400);
+    fileDialog.setDirectory(QFILEDIALOG_CURRENTPATH);
+    fileDialog.setWindowTitle(QFILEDIALOG_SAVEIMAGE);
+    fileDialog.setFilter(tr(QFILEDIALOG_SUPPORTTYPE));
+    fileDialog.setOption(QFileDialog::DontConfirmOverwrite);
+    if(fileDialog.exec() == QDialog::Accepted)
+    {
+        QString strFilePath = fileDialog.selectedFiles()[0];
+        QString fileName = strFilePath +".jpg";
+        if(fileName.isEmpty())
+        {
+            return;
+        }
+        else
+        {
+            if( capframe.empty() )
+            {
+                QMessageBox::information(mpNULL,tr(QMESSAGEBOX_WARNING),tr("Make sure has one people in the frame!"));
+                cout<<"The frame is empty!"<<endl;
+                return;
+            }
+            else
+            {
+                cv::imwrite(fileName.toStdString().c_str(), capframe);
+                cout<<"save image sucess"<<endl;
+            }
+        }
+    }
+}
+
+///<summary> show the camera video with UI capture image area </summary>
+mpVOID faceRecognize::showImageFromUsers(Mat& frame)
+{
+    if(frame.empty())
+    {
+        cout<<"The frame is empty"<<endl;
+        return;
+    }
+    QImage image=QImage((const uchar*)frame.data,frame.cols,frame.rows,QImage::Format_RGB888).rgbSwapped();
+    image = image.scaled(185, 160);//set screen size
+    ui->ShowSnap->setPixmap(QPixmap::fromImage(image));
+}
+
+///<summary> pop out input label button to save current feature infomation </summary>
+mpBOOL faceRecognize::inputLabelFromUsr(mpVOID)
+{
+    mpBOOL bResult = mpFALSE;
+    cout<<"Please Input You Lable:"<<endl;
+    inputName.clear();
+    QString text=QInputDialog::getText(mpNULL,QObject::tr("Input Dialog"),QObject::tr("Please Input You Lable:"),QLineEdit::Normal,\
+                                  QString(),&bResult);
+    if(bResult)
+    {
+        inputName.append(text);
+        if(inputName.isEmpty())
+        {
+            bResult = mpFALSE;
+            QMessageBox::information(mpNULL,tr(QMESSAGEBOX_WARNING),tr("Please correct input the Label."));
+        }
+        else
+        {
+            qDebug()<<inputName;
+        }
+    }
+    return bResult;
+}
+
+///<summary> Capture face from UI button and save into database </summary>
+void faceRecognize::on_CaptureImage_clicked()
+{
+    m_pTimer->stop();//stop update frame
+    if (Opened == eCameraStatus || Captured == eCameraStatus)
+    {
+        cout<<"Can enter."<<endl;
+    }
+    else
+    {
+        //m_pTimer->stop();
+        cout<<"Check Your Camera is Open."<<endl;
+        QMessageBox::information(mpNULL,tr(QMESSAGEBOX_WARNING),tr("Check Your Camera is Open."));
+        m_pTimer->start(FACE_DELAY_DISPLAY_INTERVAL);
+        return;
+    }
+
+    cap >> capframe;//capture the once frame
+    Mat original = capframe.clone();
+
+    int MaxNum = detectFaceNumWithFrame(original);
+    if(MIN_FACE_DETECT_NUMBER != MaxNum)
+    {
+        cout<<"Make sure has one people in the frame!"<<endl;
+        QMessageBox::information(mpNULL,tr(QMESSAGEBOX_WARNING),tr("Make sure has one people in the frame(peoples: %1).").arg(MaxNum));
+    }
+    else
+    {
+        showImageFromUsers(original);
+        if(inputLabelFromUsr())
+        {
+            eCameraStatus = Captured;
+            float gallery_fea[2048];
+            memset(gallery_fea,0x00, sizeof(gallery_fea));
+            extractFaceFeatureWithImage(original, gallery_fea);//get the current frame feature data
+            m_pFaceDBA->face_database_insert_feature(inputName.toStdString().c_str(),gallery_fea,sizeof(gallery_fea));
+        }
+        ui->ShowSnap->clear();//clear the capture frame or open image
+    }
+    m_pTimer->start(FACE_DELAY_DISPLAY_INTERVAL);
+}

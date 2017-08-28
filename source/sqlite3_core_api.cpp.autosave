@@ -1,0 +1,178 @@
+#include "sqlite3_core_api.h"
+
+
+sqlite3_core_api::sqlite3_core_api(void)
+{
+
+}
+
+sqlite3_core_api::~sqlite3_core_api()
+{
+
+}
+
+int sqlite3_core_api::sqlite3_core_dat_init(void)
+{
+    PRT_INFO("\n");
+    if(sqlite3_open(SQLITE_DB_NAME, &sqlite3_db) != SQLITE_OK)
+    {
+        // check whether we need to have it in persistent memory or not
+        PRT_INFO("Can't open database sqlite3_db: %s\n", sqlite3_errmsg(sqlite3_db));
+        sqlite3_close(sqlite3_db);
+        return -1;
+    }
+
+    MAKE_DB_QUERY(sqlite3_db,
+                "Error in Creating the key_name table(Err): %s\n", -1, NULL, NULL,
+                "CREATE TABLE IF NOT EXISTS feature_key_value "
+                "(key_name varchar, "
+                "key_value varchar(8200));");
+
+    return 0;
+}
+
+int sqlite3_core_api::sqlite3_core_blob_dat_init(void)
+{
+    PRT_INFO("\n");
+    if(sqlite3_open(SQLITE_BLOB_DB_NAME, &sqlite3_blob_db) != SQLITE_OK)
+    {
+        // check whether we need to have it in persistent memory or not
+        PRT_INFO("Can't open database sqlite3_blob_db: %s\n", sqlite3_errmsg(sqlite3_blob_db));
+        sqlite3_close(sqlite3_blob_db);
+        return -1;
+    }
+
+    MAKE_DB_QUERY(sqlite3_db,
+                "Error in Creating the key_name table(Err): %s\n", -1, NULL, NULL,
+                "CREATE TABLE IF NOT EXISTS feature_key_value "
+                "(ID INTEGER PRIMARY KEY, "
+                "DATE BLOB);");
+
+}
+
+int sqlite3_core_api::sqlite3_core_dat_insert(const char *key_name, const char *key_value,const char* sql)
+{
+  int i=0;
+
+  if(!sqlite3_db) {
+    PRT_INFO("Database has not been initialized\n");
+    return -1;
+  }
+  if(!key_name) {
+    PRT_INFO("key_name cannot be NULL\n");
+    return -1;
+  }
+
+  /* find the table to use */
+  for(i = 0; i < sizeof(tables_to_use) / sizeof(tables_to_use[0]); i++) {
+    if(tables_to_use[i].key_name == NULL /* The default table */
+       || strcmp(tables_to_use[i].key_name, key_name) == 0) {
+      /* lookup the entry by using the found table or default table */
+      MAKE_DB_QUERY(*tables_to_use[i].db,
+                    "Deletion ERROR: %s\n", 0, NULL, NULL,
+                    "DELETE FROM %Q WHERE key_name = %Q", tables_to_use[i].table_name, key_name);
+      if(key_value) /* if key_value is NULL delete the entry by not inserting */
+        MAKE_DB_QUERY(*tables_to_use[i].db,
+                      "Insertion ERROR: %s\n", -1, NULL, NULL,
+                      sql, tables_to_use[i].table_name, key_name, key_value);
+      break;
+    }
+  }
+  return 0;
+}
+
+int sqlite3_core_api::bivl_core_dat_insert_int(const char *kname, int key_value)
+{
+    char value_str[128];
+    PRT_INFO("%s: KeyName %s\n", __FUNCTION__, kname);
+
+    snprintf(value_str, sizeof(value_str), "%d", key_value);
+    value_str[sizeof(value_str) - 1] = '\0';
+    return sqlite3_core_dat_insert(kname, value_str,"INSERT OR REPLACE INTO %Q(key_name, key_value) values (%Q, %Q);");
+}
+
+int sqlite3_core_api::bivl_core_dat_insert_float(const char *kname, float key_value)
+{
+    char value_str[8200];
+    PRT_INFO("%s: KeyName %s\n", __FUNCTION__, kname);
+
+    snprintf(value_str, sizeof(value_str), "%p", key_value);
+    value_str[sizeof(value_str) - 1] = '\0';
+    return sqlite3_core_dat_insert(kname, value_str,"INSERT OR REPLACE INTO %Q(key_name, key_value) values (%Q, %Q);");
+
+}
+
+int sqlite3_core_api::bivl_core_dat_insert_float_array(const char *kname, float *key_value, int nSize)
+{
+
+    char value_str[8192];
+  //  PRT_INFO("KeyName %s\n", kname);
+    for(int i=0; i<nSize; i++)
+    {
+        snprintf(value_str, sizeof value_str,"%s%f",value_str, key_value[i]);
+    }
+    value_str[sizeof(value_str) - 1] = '\0';
+    return sqlite3_core_dat_insert(kname, value_str,"INSERT OR REPLACE INTO %Q(key_name, key_value) values (%Q, %Q);");
+}
+
+int sqlite3_core_api::sqlite3_core_dat_get_cb(void *void_arg, int n_columns, char **result , char **column_names)
+{
+    sqlite3_core_dat_get_cb_arg_t *arg = (sqlite3_core_dat_get_cb_arg_t*)void_arg;
+    if(arg->found == 0) {
+        arg->found = 1;
+        strncpy(arg->str,result[0],arg->len);
+    }
+    return 0;
+}
+
+int sqlite3_core_api::sqlite3_core_dat_get(const char *key_name, char *index_value, int nbytes)
+{
+  int i;
+  sqlite3_core_dat_get_cb_arg_t arg;
+
+  if(!sqlite3_db) {
+    PRT_INFO("Database has not been initialized\n");
+    return -1;
+  }
+  if(!key_name || !index_value) {
+    PRT_INFO("key_name and index_value cannot be NULL\n");
+    return -1;
+  }
+
+  arg.found = 0;
+  arg.str = index_value;
+  arg.len = nbytes;
+
+  /* find the table to use */
+  for(i = 0; i < sizeof(tables_to_use) / sizeof(tables_to_use[0]); i++) {
+    if(tables_to_use[i].key_name == NULL /* The default table */
+       || strcmp(tables_to_use[i].key_name, key_name) == 0) {
+      /* lookup the entry by using the found table or default table */
+      MAKE_DB_QUERY(*tables_to_use[i].db,
+                    "Database lookup failed: %s\n", 0, sqlite3_core_dat_get_cb, &arg,
+                    "SELECT value FROM %Q WHERE key_name = %Q", tables_to_use[i].table_name, key_name);
+      break;
+    }
+  }
+
+  if(arg.found) {
+    /* make sure the string is terminated */
+    index_value[nbytes - 1] = '\0';
+    return 0;
+  }
+  index_value[0] = '\0';
+  return -1; /* not found */
+}
+
+int sqlite3_core_api::sqlite3_core_dat_shutdown(void)
+{
+  int rc;
+
+  if((rc = sqlite3_close(sqlite3_db))) {
+    PRT_INFO("database close failed: error = %d\n", rc);
+    return -1;
+  }
+  sqlite3_db = NULL;
+
+    return 0;
+}
