@@ -80,7 +80,7 @@ using namespace seeta;
 #define QFILEDIALOG_SUPPORTTYPE     "Image File(*.jpg *png)"
 #define QFILEDIALOG_CURRENTPATH     "."
 #define FACE_MODES_DIR   "/models/"
-#define FACE_CASCADE_DIR   "./cascade/"
+#define FACE_CASCADE_DIR   "/cascade/"
 
 #define FACE_SET_PREDICTION_VALUE   0.7
 #define FACE_DELAY_DISPLAY_INTERVAL 50

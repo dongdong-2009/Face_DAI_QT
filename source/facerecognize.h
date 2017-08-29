@@ -49,6 +49,7 @@ public:
     void detectBlink(Mat &matEyePrevious, Mat &matEyeCurrent, String eye, bool &eyeOpen, int &blinkNumber, clock_t &closeTime);
     void calcFlowEyes(const Mat& flow, Mat& cflowmap, int step, int &movementX, int &movementY);
     bool getMatchFaces(Mat matCapturedGrayImage, Mat matCapturedImage,cv::Rect face,cv::Rect &detectedFaceRegion);
+    mpBOOL selectFeatureFromDatabase(float* probe_fea);
 
 private slots:
     void on_OpenCamera_clicked();

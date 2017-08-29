@@ -105,7 +105,7 @@ mpVOID faceRecognize::InitFaceModel(mpVOID)
         m_pFaceAli = new FaceAlignment((scurrentpath + FACE_MODES_DIR + "face_fa_v1.1.bin").c_str());
         // Initialize face Identification model
         m_pFaceIde = new FaceIdentification((scurrentpath + FACE_MODES_DIR + "face_fr_v1.0.bin").c_str());
-        m_pFaceDet->SetMinFaceSize(40);
+        m_pFaceDet->SetMinFaceSize(80);
         m_pFaceDet->SetScoreThresh(2.f);
         m_pFaceDet->SetImagePyramidScaleFactor(0.8f);
         m_pFaceDet->SetWindowStep(4, 4);

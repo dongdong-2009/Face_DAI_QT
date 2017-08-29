@@ -72,6 +72,7 @@ void faceRecognize::loadCascadeClassifier()
     else
     {
         cout <<"please check your resource floder!"<<endl;
+        
         return;
     }
 
@@ -530,7 +531,7 @@ cv::Rect faceRecognize::findBiggestFace(Mat matCapturedGrayImage, CascadeClassif
 }
 
 ///<summary> Select feature infomation from database and find out the feature name </summary>
-mpBOOL faceRecognize::selectNameByDatabase(float* probe_fea)
+mpBOOL faceRecognize::selectFeatureFromDatabase(float* probe_fea)
 {
     mpBOOL bRet = mpFALSE;
     float prediction = 0.0;
@@ -566,10 +567,6 @@ mpVOID faceRecognize::readFrameFromCamera()
     Mat original(IMG_HEIGHT,IMG_WIDTH,CV_8UC3,cv::Scalar(0));
     original = frame.clone();    // Clone the current frame:
     cv::flip(original,original,1);//flip image
-
-    //cv::Mat img(IMG_HEIGHT,IMG_WIDTH,CV_8UC3,cv::Scalar(0));
-    //m_netWork->sendMatDataToServer(original);
-    //m_netWork->receiveResultFromServer(img);
 
     int face_MaxNum = detectFaceNumWithFrame(original);
     if(NO_FACE_DETECT_NUMBER == face_MaxNum || MIN_FACE_DETECT_NUMBER != face_MaxNum)
