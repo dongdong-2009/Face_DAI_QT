@@ -163,19 +163,17 @@ mpINT faceRecognize::detectFaceNumWithFrame(Mat gallery_img)
     if (num == 0) {
         return 0;
     }
-    else {
-        //if(faceData.face_name.empty())
-        //{
-            for(int i = 0; i < num; i++) {
-                //Drawing the face rect
-                cv::Rect face_rect;
-                face_rect.x = facesInfo.faces[i].bbox.x;
-                face_rect.y = facesInfo.faces[i].bbox.y;
-                face_rect.width = facesInfo.faces[i].bbox.width;
-                face_rect.height = facesInfo.faces[i].bbox.height;
-                cv::rectangle(gallery_img, face_rect, CV_RGB(255, 0, 0), 4, 8, 0);
-            }
-        //}
+    else 
+    {
+        for(int i = 0; i < num; i++) {
+            //Drawing the face rect
+            cv::Rect face_rect;
+            face_rect.x = facesInfo.faces[i].bbox.x;
+            face_rect.y = facesInfo.faces[i].bbox.y;
+            face_rect.width = facesInfo.faces[i].bbox.width;
+            face_rect.height = facesInfo.faces[i].bbox.height;
+            cv::rectangle(gallery_img, face_rect, CV_RGB(255, 0, 0), 4, 8, 0);
+        }
         return num;
     }
 }
